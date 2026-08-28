@@ -117,16 +117,24 @@ function pickFreePort() {
 function captureTokens() {
   const token = process.env.ACTIONS_RUNTIME_TOKEN || '';
   const resultsUrl = process.env.ACTIONS_RESULTS_URL || '';
-  if (!token || !resultsUrl) {
+  const cacheUrl = process.env.ACTIONS_CACHE_URL || '';
+  // GitHub injects ACTIONS_RUNTIME_TOKEN + ACTIONS_RESULTS_URL (v2); v1
+  // forges (Gitea/Forgejo) inject ACTIONS_RUNTIME_TOKEN + ACTIONS_CACHE_URL.
+  // Fail only when both pairs are absent.
+  if (!token || (!resultsUrl && !cacheUrl)) {
     fail(
-      'ACTIONS_RUNTIME_TOKEN / ACTIONS_RESULTS_URL are not present in the action ' +
-        'environment; hestia cannot talk to the GitHub Actions cache API'
+      'ACTIONS_RUNTIME_TOKEN is missing, or neither ACTIONS_RESULTS_URL (v2) ' +
+        'nor ACTIONS_CACHE_URL (v1) is present; hestia cannot talk to the cache API'
     );
   }
   // The runtime token is a credential: mask it in logs before exporting.
   console.log(`::add-mask::${token}`);
   exportVariable('ACTIONS_RUNTIME_TOKEN', token);
   exportVariable('ACTIONS_RESULTS_URL', resultsUrl);
+  if (cacheUrl) {
+    // A URL, not a credential: export unmasked.
+    exportVariable('ACTIONS_CACHE_URL', cacheUrl);
+  }
   console.log('hestia-cache: cache tokens captured and exported');
 }
 

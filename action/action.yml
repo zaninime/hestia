@@ -2,8 +2,8 @@ name: hestia-cache
 # Marketplace limits this to 125 characters; the long-form blurb lives in
 # action/README.md.
 description: >
-  Nix binary cache backed by the GitHub Actions cache (v2 API). Wires a
-  substituter and post-build-hook into nix.conf.
+  Nix binary cache backed by the GitHub Actions cache (v2 or v1 API).
+  Wires a substituter and post-build-hook into nix.conf.
 
 branding:
   icon: archive
