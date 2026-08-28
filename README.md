@@ -222,6 +222,25 @@ All inputs are optional; the defaults work for the quick start above.
 | `read-only` | `false` | Substitute from the cache but never write to it (no post-build-hook, no drain). |
 | `no-closure` | `false` | Cache built paths only, without their runtime closure. |
 
+### Gitea / Forgejo (cache v1)
+
+Gitea and Forgejo implement the Actions cache v1 (`_apis/artifactcache`) API
+instead of GitHub's v2 Twirp API. To run hestia on those forges, set the
+`HESTIA_CACHE_API_V1` environment variable to any value (its presence selects
+v1; unset keeps the v2 default) and pass `binary:` to supply the hestia
+binary yourself:
+
+```yaml
+      - uses: Mic92/hestia@v3
+        with:
+          binary: ./hestia-bin/bin/hestia
+        env:
+          HESTIA_CACHE_API_V1: "1"
+```
+
+Garbage collection is GitHub-only: the GC workflow's REST list/delete has no
+v1 equivalent, so hestia offers no GC on Gitea/Forgejo.
+
 The GC workflow takes one input: `dry-run` (plan only, delete nothing); see
 [`.github/workflows/gc.yml`](.github/workflows/gc.yml).
 

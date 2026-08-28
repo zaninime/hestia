@@ -42,6 +42,10 @@ a new manifest version.
 hestia creates only two kinds of cache entry: the manifest, and pack
 blobs.
 
+Behind `CacheClient`, hestia speaks either GitHub's v2 Twirp API or the
+v1 `_apis/artifactcache` API (Gitea/Forgejo, selected by `HESTIA_CACHE_API_V1`);
+both backends share one manifest and pack storage format.
+
 ### Manifest
 
 The manifest is a single zstd-compressed CBOR document describing

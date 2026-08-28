@@ -11,8 +11,9 @@ turning the GitHub Actions cache into a Nix binary cache.
 When the job starts, the action:
 
 1. Captures the Actions cache API tokens (`ACTIONS_RUNTIME_TOKEN`,
-   `ACTIONS_RESULTS_URL`). They are only visible to JS actions, which is why
-   hestia needs an action at all and cannot be set up from `run:` steps.
+   `ACTIONS_RESULTS_URL`, and `ACTIONS_CACHE_URL` on v1 forges). They are
+   only visible to JS actions, which is why hestia needs an action at all
+   and cannot be set up from `run:` steps.
 2. Installs the `hestia` binary, either from a GitHub release (verified
    against GitHub's build attestations) or from a path you built yourself.
 3. Starts the hestia daemon: a post-build-hook listener plus a local
@@ -71,6 +72,23 @@ defaults to `latest` when omitted, so a bare invocation starts a daemon):
 This mode is for setups that run hestia themselves; hestia's own
 integration tests use it.
 
+### Gitea / Forgejo (cache v1)
+
+Gitea and Forgejo implement the older cache v1 API
+(`_apis/artifactcache`) instead of GitHub's v2 API. On those forges, pass a
+locally built binary and set `HESTIA_CACHE_API_V1` so the daemon speaks v1:
+
+```yaml
+      - uses: Mic92/hestia/action@v1
+        with:
+          binary: ./hestia-bin/bin/hestia
+        env:
+          HESTIA_CACHE_API_V1: "1"
+```
+
+The action exports `ACTIONS_CACHE_URL` alongside the runtime token; the
+daemon uses it when `HESTIA_CACHE_API_V1` is set.
+
 ## Inputs
 
 | Input | Default | Description |
@@ -86,6 +104,10 @@ integration tests use it.
 | `filter-drv-closures` | `false` | Apply the upstream filter to registered derivation closures; requires `upstream-cache-filter`. Use `hestia prefetch` for bulk closure fetching. |
 | `read-only` | `false` | Substitute from the cache but never write to it (no post-build-hook, no drain). |
 | `no-closure` | `false` | Cache built paths only, without their runtime closure. |
+
+`HESTIA_CACHE_API_V1` is not an action input but an environment variable:
+set it to any value to make hestia speak the cache v1 API on Gitea/Forgejo
+(pair with `binary:`); unset keeps the v2 default.
 
 ## Garbage collection
 
