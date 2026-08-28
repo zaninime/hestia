@@ -9,8 +9,9 @@ use std::sync::atomic::AtomicBool;
 use bytes::Bytes;
 
 use hestia::gha::blob;
+use hestia::gha::client::{CacheClient, Reservation};
 use hestia::gha::savemutable::SaveMutable;
-use hestia::gha::twirp::{Reservation, TwirpClient};
+use hestia::gha::twirp::TwirpClient;
 use hestia::manifest::{FileSystemObject, Manifest, PathHash};
 use hestia::pathinfo::StoreDatabase;
 use hestia::pipeline::{MANIFEST_PREFIX, PACK_TARGET_SIZE, PipelineContext};
@@ -41,7 +42,7 @@ pub fn pipeline_context_with(
     store: StoreDatabase,
 ) -> PipelineContext {
     PipelineContext {
-        twirp,
+        twirp: CacheClient::V2(twirp),
         http: http.clone(),
         store,
         upstream: UpstreamFilter::default(),
@@ -74,7 +75,7 @@ pub fn to_path_set(paths: &[&Path]) -> BTreeSet<String> {
 /// Load the newest committed manifest directly from the fake backend, or
 /// `None` if no version was ever committed.
 pub async fn committed_manifest(fake: &FakeGha, http: &reqwest::Client) -> Option<(u64, Manifest)> {
-    let twirp = fake.twirp(http);
+    let twirp = CacheClient::V2(fake.twirp(http));
     let save = SaveMutable::new(&twirp, http, MANIFEST_PREFIX);
     let entry = save.load().await.expect("loading manifest failed")?;
     Some((
@@ -85,14 +86,18 @@ pub async fn committed_manifest(fake: &FakeGha, http: &reqwest::Client) -> Optio
 
 /// Reserve + upload + finalize one cache entry directly, bypassing hestia's
 /// pipeline (e.g. to plant a corrupt manifest blob).
-pub async fn store_entry(twirp: &TwirpClient, http: &reqwest::Client, key: &str, data: &[u8]) {
-    let Reservation::Created { upload_url } = twirp.create_cache_entry(key).await.unwrap() else {
+pub async fn store_entry(twirp: &CacheClient, http: &reqwest::Client, key: &str, data: &[u8]) {
+    let Reservation::Created { token } = twirp.create_cache_entry(key).await.unwrap() else {
         panic!("entry {key} unexpectedly already exists");
     };
-    blob::put(http, &upload_url, Bytes::copy_from_slice(data))
+    blob::put(http, &token, Bytes::copy_from_slice(data))
         .await
         .unwrap();
-    twirp.finalize_upload(key, data.len() as u64).await.unwrap();
+    match twirp {
+        CacheClient::V2(inner) => {
+            inner.finalize_upload(key, data.len() as u64).await.unwrap();
+        }
+    }
 }
 
 /// Every chunk referenced by every path in the manifest must have a

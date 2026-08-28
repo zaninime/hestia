@@ -44,9 +44,9 @@ use crate::chunker::{
 };
 use crate::cli::GcArgs;
 use crate::drain::human_bytes;
+use crate::gha::client::{CacheClient, DownloadUrl};
 use crate::gha::rest::{CacheEntry, RestClient};
 use crate::gha::savemutable::{MutableEntry, SaveMutable};
-use crate::gha::twirp::{DownloadUrl, TwirpClient};
 use crate::gha::{Error as GhaError, blob};
 use crate::manifest::{
     Blake3Pack, ChunkHash, ChunkLocation, FileSystemObject, Manifest, PackHash, PackInfo, PathHash,
@@ -754,7 +754,7 @@ impl GcReport {
 
 /// Everything `hestia gc` needs to talk to the world.
 pub struct GcContext {
-    pub twirp: TwirpClient,
+    pub twirp: CacheClient,
     pub rest: RestClient,
     pub http: reqwest::Client,
     /// SaveMutable family prefix (always [`MANIFEST_PREFIX`] in production;
@@ -1249,7 +1249,7 @@ impl GcContext {
 
 pub async fn run(args: &GcArgs) -> ExitCode {
     let http = reqwest::Client::new();
-    let twirp = match TwirpClient::from_env(http.clone()) {
+    let twirp = match CacheClient::from_env(http.clone()) {
         Ok(twirp) => twirp,
         Err(err) => {
             eprintln!(

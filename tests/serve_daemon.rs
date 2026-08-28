@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+use hestia::gha::client::CacheClient;
 use hestia::pathinfo::StoreDatabase;
 use hestia::pipeline::{self, AccessLog, PipelineContext};
 use hestia::protocol::{self, DrainStats, Request};
@@ -709,7 +710,7 @@ async fn substituter_serves_paths_pushed_by_daemon_drains() {
             store.database().store_dir().clone(),
             daemon.manifest_store.clone(),
             daemon.access_log.clone(),
-            fake.twirp(&http),
+            CacheClient::V2(fake.twirp(&http)),
             http.clone(),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

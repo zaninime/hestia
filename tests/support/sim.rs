@@ -21,9 +21,9 @@ use bytes::Bytes;
 use hestia::chunker::{Chunk, PackBuilder, chunk_data, nar_hash_from_chunks};
 use hestia::gc::{GcContext, GcPolicy};
 use hestia::gha::Error as GhaError;
+use hestia::gha::client::CacheClient;
 use hestia::gha::rest::RestClient;
 use hestia::gha::savemutable::SaveMutable;
-use hestia::gha::twirp::TwirpClient;
 use hestia::manifest::{
     ChunkHash, ChunkList, Directory, FileSystemObject, FileTree, Hash32, Manifest, PackInfo,
     PathEntry, PathHash, Regular, Root, StorePath, StorePathHash,
@@ -120,7 +120,7 @@ impl SimPath {
 /// Drives pushes (and builds GC contexts) against one fake GHA backend.
 pub struct SimCache {
     pub http: reqwest::Client,
-    pub twirp: TwirpClient,
+    pub twirp: CacheClient,
     pub rest: RestClient,
 }
 
@@ -128,7 +128,7 @@ impl SimCache {
     pub fn new(fake: &FakeGha, http: &reqwest::Client) -> Self {
         Self {
             http: http.clone(),
-            twirp: fake.twirp(http),
+            twirp: CacheClient::V2(fake.twirp(http)),
             rest: fake.rest(http),
         }
     }

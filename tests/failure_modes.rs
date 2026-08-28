@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use hestia::chunker::pack_cache_key;
 use hestia::gc::{GcContext, GcPolicy};
+use hestia::gha::client::CacheClient;
 use hestia::gha::savemutable::SaveMutable;
 use hestia::pipeline::{AccessLog, MANIFEST_PREFIX, PipelineContext, now_unix};
 
@@ -120,7 +121,7 @@ async fn quota_exhaustion_fails_gracefully_and_gc_cleans_orphaned_packs() {
     // clock is in small tick units; pretend an hour+ passed since upload.
     fake.exhaust_quota_after(&http, u64::MAX).await;
     let gc = GcContext {
-        twirp: fake.twirp(&http),
+        twirp: CacheClient::V2(fake.twirp(&http)),
         rest: fake.rest(&http),
         http: http.clone(),
         manifest_prefix: MANIFEST_PREFIX.to_string(),
@@ -152,7 +153,7 @@ async fn garbage_manifest_blob_is_replaced_not_fatal() {
 
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     // Plant a manifest blob that is not even valid zstd.
     let m1 = format!("{MANIFEST_PREFIX}#1");
@@ -201,7 +202,7 @@ async fn truncated_manifest_blob_is_replaced_not_fatal() {
 
     // ...then simulate a truncated upload of the next version: the first
     // half of a valid manifest encoding (cut mid-zstd-frame).
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
     let save = SaveMutable::new(&twirp, &http, MANIFEST_PREFIX);
     let valid = save.load().await.unwrap().unwrap().data;
     let truncated = &valid[..valid.len() / 2];
@@ -236,7 +237,7 @@ async fn gc_refuses_to_act_on_a_corrupt_manifest() {
     // leave the cache untouched.
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     let m1 = format!("{MANIFEST_PREFIX}#1");
     store_entry(&twirp, &http, &m1, b"garbage manifest").await;
@@ -247,7 +248,7 @@ async fn gc_refuses_to_act_on_a_corrupt_manifest() {
     store_entry(&twirp, &http, &pack_key, b"some pack contents").await;
 
     let gc = GcContext {
-        twirp: fake.twirp(&http),
+        twirp: CacheClient::V2(fake.twirp(&http)),
         rest: fake.rest(&http),
         http: http.clone(),
         manifest_prefix: MANIFEST_PREFIX.to_string(),
@@ -282,7 +283,7 @@ async fn daemon_starts_and_drains_over_a_corrupt_manifest() {
 
         let fake = FakeGha::start().await;
         let http = reqwest::Client::new();
-        let twirp = fake.twirp(&http);
+        let twirp = CacheClient::V2(fake.twirp(&http));
         store_entry(
             &twirp,
             &http,
@@ -508,7 +509,7 @@ async fn drained_paths_are_substitutable_despite_lookup_lag() {
             store.database().store_dir().clone(),
             manifest_store.clone(),
             access_log.clone(),
-            fake.twirp(&http),
+            CacheClient::V2(fake.twirp(&http)),
             http.clone(),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

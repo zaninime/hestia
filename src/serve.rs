@@ -47,7 +47,7 @@ use tokio::net::{UnixListener, UnixStream};
 const MAX_PACK_VERIFY_ENTRIES: u64 = 1000;
 
 use crate::cli::ServeArgs;
-use crate::gha::twirp::TwirpClient;
+use crate::gha::client::CacheClient;
 use crate::pathinfo::StoreDatabase;
 use crate::pipeline::{self, AccessLog, MANIFEST_PREFIX, PipelineContext, now_unix};
 use crate::protocol::{DrainStats, Request, Response, encode_line};
@@ -425,7 +425,7 @@ impl Daemon {
 /// win. Recording the version makes drains start their reservations above
 /// it even when cache lookups lag.
 async fn load_published_manifest(
-    twirp: &TwirpClient,
+    twirp: &CacheClient,
     http: &reqwest::Client,
     manifest_store: &ManifestStore,
 ) {
@@ -552,7 +552,7 @@ pub async fn run(args: &ServeArgs) -> ExitCode {
         .connect_timeout(Duration::from_secs(10))
         .build()
         .expect("building the HTTP client failed");
-    let twirp = match TwirpClient::from_env(http.clone()) {
+    let twirp = match CacheClient::from_env(http.clone()) {
         Ok(twirp) => twirp,
         Err(err) => {
             eprintln!(

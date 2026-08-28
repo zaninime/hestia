@@ -19,6 +19,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+use crate::gha::client::{DownloadUrl, Reservation};
 use crate::gha::{Error, blob};
 
 /// Cache `version` namespace: sha256 of "hestia-2".
@@ -122,27 +123,6 @@ pub struct TwirpErrorBody {
     pub code: String,
     #[serde(default, alias = "message")]
     pub msg: String,
-}
-
-/// Result of reserving a cache entry for upload.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reservation {
-    /// Key reserved; upload the blob to this pre-signed Azure URL, then call
-    /// [`TwirpClient::finalize_upload`].
-    Created { upload_url: String },
-    /// The key+version already exists (reserved or finalized). For
-    /// content-addressed keys this means the data is already present.
-    AlreadyExists,
-}
-
-/// Result of looking up a cache entry for download.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DownloadUrl {
-    /// Entry found; `matched_key` is the full key (relevant for prefix
-    /// restore-key matches).
-    Hit { url: String, matched_key: String },
-    /// No entry matches.
-    Miss,
 }
 
 #[derive(Debug, Clone)]
@@ -261,7 +241,7 @@ impl TwirpClient {
                     )));
                 }
                 Ok(Reservation::Created {
-                    upload_url: response.signed_upload_url,
+                    token: response.signed_upload_url,
                 })
             }
             // Distinct from a taken key: without this the save loop retries

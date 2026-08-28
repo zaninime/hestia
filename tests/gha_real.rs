@@ -16,8 +16,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 
 use hestia::gha::blob;
+use hestia::gha::client::{DownloadUrl, Reservation};
 use hestia::gha::rest::RestClient;
-use hestia::gha::twirp::{DownloadUrl, Reservation, TwirpClient};
+use hestia::gha::twirp::TwirpClient;
 
 /// The real service is eventually consistent: a just-finalized entry can
 /// take a while to become visible to GetCacheEntryDownloadURL (observed in
@@ -78,11 +79,11 @@ async fn real_blob_round_trip_range_read_and_delete() {
     let data: Vec<u8> = (0..256 * 1024u32).map(|i| (i % 251) as u8).collect();
 
     // Reserve + upload + finalize.
-    let Reservation::Created { upload_url } = twirp.create_cache_entry(&key).await.unwrap() else {
+    let Reservation::Created { token } = twirp.create_cache_entry(&key).await.unwrap() else {
         panic!("fresh unique key reported as already existing");
     };
-    blob::put_with_refresh(&http, &upload_url, Bytes::from(data.clone()), async || {
-        Ok(upload_url.clone())
+    blob::put_with_refresh(&http, &token, Bytes::from(data.clone()), async || {
+        Ok(token.clone())
     })
     .await
     .unwrap();
@@ -180,16 +181,12 @@ async fn real_miss_and_restore_key_prefix() {
     for version in 1..=2u8 {
         let key = format!("{family}#{version}");
         let payload = format!("payload v{version}").into_bytes();
-        let Reservation::Created { upload_url } = twirp.create_cache_entry(&key).await.unwrap()
-        else {
+        let Reservation::Created { token } = twirp.create_cache_entry(&key).await.unwrap() else {
             panic!("fresh key {key} already exists");
         };
-        blob::put_with_refresh(
-            &http,
-            &upload_url,
-            Bytes::from(payload.clone()),
-            async || Ok(upload_url.clone()),
-        )
+        blob::put_with_refresh(&http, &token, Bytes::from(payload.clone()), async || {
+            Ok(token.clone())
+        })
         .await
         .unwrap();
         twirp

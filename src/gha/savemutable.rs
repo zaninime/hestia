@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
-use crate::gha::twirp::{DownloadUrl, Reservation, TwirpClient};
+use crate::gha::client::{CacheClient, DownloadUrl, Reservation};
 use crate::gha::{Error, blob};
 
 /// Cache key for version `index` of family `prefix`, e.g. `m#5`.
@@ -71,7 +71,7 @@ pub struct MutableEntry {
 
 /// Handle for one mutable, versioned cache entry family (e.g. `m`).
 pub struct SaveMutable<'a> {
-    twirp: &'a TwirpClient,
+    twirp: &'a CacheClient,
     http: &'a reqwest::Client,
     prefix: String,
     /// Delay between conflict retries.
@@ -85,7 +85,7 @@ pub struct SaveMutable<'a> {
 
 impl<'a> SaveMutable<'a> {
     pub fn new(
-        twirp: &'a TwirpClient,
+        twirp: &'a CacheClient,
         http: &'a reqwest::Client,
         prefix: impl Into<String>,
     ) -> Self {
@@ -212,9 +212,9 @@ impl<'a> SaveMutable<'a> {
             let key = key_for(&self.prefix, index);
 
             match self.twirp.create_cache_entry(&key).await? {
-                Reservation::Created { upload_url } => {
+                Reservation::Created { token } => {
                     self.twirp
-                        .upload_and_finalize(self.http, &key, upload_url, data)
+                        .upload_and_finalize(self.http, &key, token, data)
                         .await?;
                     return Ok(index);
                 }

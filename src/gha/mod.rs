@@ -11,9 +11,13 @@
 //!   `GITHUB_TOKEN`. Used by `hestia gc`.
 
 pub mod blob;
+pub mod client;
 pub mod rest;
 pub mod savemutable;
 pub mod twirp;
+pub mod v1;
+
+pub use client::{CacheClient, DownloadUrl, Reservation};
 
 /// Errors shared by all GHA cache client modules.
 #[derive(Debug, thiserror::Error)]

@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
+use hestia::gha::client::{CacheClient, DownloadUrl, Reservation};
 use hestia::gha::savemutable::SaveMutable;
-use hestia::gha::twirp::{DownloadUrl, Reservation};
 use hestia::gha::{Error, blob};
 use support::common::store_entry;
 use support::fake_gha::FakeGha;
@@ -20,7 +20,7 @@ use support::fake_gha::FakeGha;
 async fn blob_round_trip() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     // 1 MiB of patterned data: large enough to be a realistic pack blob.
     let data: Vec<u8> = (0..1024 * 1024u32).map(|i| (i % 251) as u8).collect();
@@ -41,7 +41,7 @@ async fn blob_round_trip() {
 async fn blob_range_reads() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     let data: Vec<u8> = (0..10_000u32).map(|i| (i % 256) as u8).collect();
     store_entry(&twirp, &http, "pack-range", &data).await;
@@ -68,7 +68,7 @@ async fn blob_range_reads() {
 async fn already_exists_dedup() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     store_entry(&twirp, &http, "pack-dedup", b"chunk data").await;
 
@@ -94,7 +94,7 @@ async fn already_exists_dedup() {
 async fn download_miss_and_restore_key_prefix() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     assert_eq!(
         twirp.get_download_url("no-such-key", &[]).await.unwrap(),
@@ -119,7 +119,7 @@ async fn download_miss_and_restore_key_prefix() {
 async fn url_refresh_retry_on_403() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     store_entry(&twirp, &http, "pack-refresh", b"data behind expiring url").await;
 
@@ -152,10 +152,10 @@ async fn url_refresh_retry_on_403() {
 async fn upload_url_refresh_retry_on_403() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     // Reserve, then expire the upload URL before uploading.
-    let Reservation::Created { upload_url } = twirp
+    let Reservation::Created { token } = twirp
         .create_cache_entry("pack-upload-refresh")
         .await
         .unwrap()
@@ -164,7 +164,7 @@ async fn upload_url_refresh_retry_on_403() {
     };
     fake.expire_urls(&http).await;
 
-    let error = blob::put(&http, &upload_url, Bytes::from_static(b"payload"))
+    let error = blob::put(&http, &token, Bytes::from_static(b"payload"))
         .await
         .unwrap_err();
     let Error::Status { status: 403, .. } = error else {
@@ -178,7 +178,7 @@ async fn upload_url_refresh_retry_on_403() {
     // refresh callback is invoked and its error propagates.
     let result = blob::put_with_refresh(
         &http,
-        &upload_url,
+        &token,
         Bytes::from_static(b"payload"),
         async move || {
             Err(Error::InvalidResponse(
@@ -197,7 +197,7 @@ async fn upload_url_refresh_retry_on_403() {
 async fn savemutable_versioning() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     let save = SaveMutable::new(&twirp, &http, "m").with_retry(Duration::from_millis(20), 20, 3);
 
@@ -234,7 +234,7 @@ async fn savemutable_versioning() {
 async fn savemutable_concurrent_writers_lose_no_updates() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     // Both writers append their marker to a JSON list. Whatever the
     // interleaving, the final manifest must contain both markers: the
@@ -273,7 +273,7 @@ async fn savemutable_concurrent_writers_lose_no_updates() {
 async fn savemutable_skips_stale_reservation() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     // Simulate a crashed writer: m#1 is reserved but never finalized.
     let Reservation::Created { .. } = twirp.create_cache_entry("m#1").await.unwrap() else {
@@ -292,7 +292,7 @@ async fn savemutable_skips_stale_reservation() {
 async fn savemutable_load_stays_consistent_across_url_refresh() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     store_entry(&twirp, &http, "m#1", b"manifest v1").await;
     store_entry(&twirp, &http, "m#2", b"manifest v2").await;
@@ -317,7 +317,7 @@ async fn savemutable_load_stays_consistent_across_url_refresh() {
 async fn savemutable_recovers_from_many_consecutive_dead_reservations() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     // Three writers crashed in a row at the frontier: m#1..m#3 are all
     // reserved but never finalized (e.g. a mass workflow cancellation).
@@ -347,7 +347,7 @@ async fn savemutable_recovers_from_many_consecutive_dead_reservations() {
 async fn savemutable_regressed_lookup_after_skip_keeps_newest_base() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     store_entry(&twirp, &http, "m#1", b"v1").await;
     store_entry(&twirp, &http, "m#2", b"v2").await;
@@ -388,7 +388,7 @@ async fn savemutable_regressed_lookup_after_skip_keeps_newest_base() {
 async fn savemutable_conflict_gives_up_eventually() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     // m#1 permanently reserved; stale-skip disabled (very high threshold)
     // so the writer can only retry and must eventually give up.
@@ -410,7 +410,7 @@ async fn savemutable_conflict_gives_up_eventually() {
 async fn rest_list_pagination_and_delete() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
     let rest = fake.rest(&http);
 
     // 5 packs of 100 bytes plus one unrelated entry.
@@ -450,7 +450,7 @@ async fn rest_list_pagination_and_delete() {
 async fn eviction_makes_entry_disappear() {
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     store_entry(&twirp, &http, "pack-evictme", b"soon to be gone").await;
 
@@ -502,7 +502,7 @@ async fn rest_list_honors_the_stable_created_at_sort_order() {
     // would pass the whole suite while reintroducing the hazard.
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     store_entry(&twirp, &http, "pack-old", b"a").await;
     store_entry(&twirp, &http, "pack-new", b"b").await;
@@ -553,7 +553,7 @@ async fn download_lookup_only_consults_restore_keys() {
     // cannot silently drift back to exact-key matching.
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let twirp = fake.twirp(&http);
+    let twirp = CacheClient::V2(fake.twirp(&http));
 
     store_entry(&twirp, &http, "pack-restore-only", b"data").await;
 
@@ -637,7 +637,7 @@ async fn version_salt_isolates_the_cache_namespace() {
     // wrote, and vice versa.
     let fake = FakeGha::start().await;
     let http = reqwest::Client::new();
-    let unsalted = fake.twirp(&http);
+    let unsalted = CacheClient::V2(fake.twirp(&http));
     let salted = fake.twirp(&http).with_version_salt("perf-run-1");
 
     store_entry(&unsalted, &http, "pack-shared-key", b"production data").await;

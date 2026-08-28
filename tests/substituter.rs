@@ -13,6 +13,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use hestia::chunker::pack_cache_key;
+use hestia::gha::client::CacheClient;
 use hestia::manifest::{Hash32, Manifest, PathHash};
 use hestia::pipeline::{AccessLog, now_unix};
 use hestia::substituter::{ManifestStore, Substituter, verify_packs};
@@ -64,7 +65,7 @@ impl RunningSubstituter {
             store.database().store_dir().clone(),
             manifest_store.clone(),
             access_log.clone(),
-            fake.twirp(http),
+            CacheClient::V2(fake.twirp(http)),
             http.clone(),
         );
         let router = substituter.into_router();
@@ -1109,7 +1110,7 @@ async fn concurrent_gc_repack_triggers_manifest_reload() {
         let fake = FakeGha::start().await;
         let http = reqwest::Client::new();
         let manifest = push_paths(&fake, &http, &store, &[&fixture]).await;
-        let twirp = fake.twirp(&http);
+        let twirp = CacheClient::V2(fake.twirp(&http));
 
         // Substituter serving the pre-repack manifest, wired with the same
         // reload hook hestia serve installs.
@@ -1160,8 +1161,8 @@ async fn concurrent_gc_repack_triggers_manifest_reload() {
             .await
             .unwrap()
         {
-            hestia::gha::twirp::DownloadUrl::Hit { url, .. } => url,
-            hestia::gha::twirp::DownloadUrl::Miss => panic!("pack must exist"),
+            hestia::gha::client::DownloadUrl::Hit { url, .. } => url,
+            hestia::gha::client::DownloadUrl::Miss => panic!("pack must exist"),
         };
         let mut pack_bytes = hestia::gha::blob::get(&http, &url, None)
             .await

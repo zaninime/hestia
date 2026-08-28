@@ -24,8 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::chunker::{self, PackBuilder, chunk_path, compress_chunks, nar_hash_from_chunks};
 use crate::gha::Error as GhaError;
 use crate::gha::blob;
+use crate::gha::client::{CacheClient, DownloadUrl, Reservation};
 use crate::gha::savemutable::SaveMutable;
-use crate::gha::twirp::{DownloadUrl, Reservation, TwirpClient};
 use crate::manifest::{Manifest, PackInfo, PathEntry, PathHash, Root};
 use crate::pathinfo::{Error as PathInfoError, Lookup, PathInfo, StoreDatabase};
 use crate::protocol::DrainStats;
@@ -180,7 +180,7 @@ pub fn decode_manifest_or_empty(data: &[u8]) -> Manifest {
 /// guard — without it, a concurrent GC could delete the pack before this
 /// writer commits the manifest referencing it (see docs/gc.als).
 pub async fn upload_pack(
-    twirp: &TwirpClient,
+    twirp: &CacheClient,
     http: &reqwest::Client,
     pack: &chunker::Pack,
 ) -> Result<bool, GhaError> {
@@ -196,9 +196,9 @@ pub async fn upload_pack(
             }
             Ok(false)
         }
-        Reservation::Created { upload_url } => {
+        Reservation::Created { token } => {
             twirp
-                .upload_and_finalize(http, &key, upload_url, pack.data.clone())
+                .upload_and_finalize(http, &key, token, pack.data.clone())
                 .await?;
             Ok(true)
         }
@@ -207,7 +207,7 @@ pub async fn upload_pack(
 
 /// Everything the pipeline needs to talk to the world.
 pub struct PipelineContext {
-    pub twirp: TwirpClient,
+    pub twirp: CacheClient,
     pub http: reqwest::Client,
     pub store: StoreDatabase,
     pub upstream: UpstreamFilter,

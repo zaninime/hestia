@@ -45,8 +45,8 @@ use harmonia_store_path::StoreDir;
 use harmonia_store_path_info::{NarHash, UnkeyedValidPathInfo, ValidPathInfo};
 
 use crate::chunker::{self, extract_chunk, flatten_tree, nar_from_chunks, pack_cache_key};
+use crate::gha::client::{CacheClient, DownloadUrl};
 use crate::gha::rest::RestClient;
-use crate::gha::twirp::{DownloadUrl, TwirpClient};
 use crate::gha::{Error as GhaError, blob};
 use crate::manifest::{
     ChunkHash, ChunkLocation, FileSystemObject, Hash32, Manifest, PackHash, PathEntry, PathHash,
@@ -298,7 +298,7 @@ impl ChunkCache {
 
 /// Fetches chunks from pack blobs in the GHA cache.
 struct ChunkFetcher {
-    twirp: TwirpClient,
+    twirp: CacheClient,
     http: reqwest::Client,
     /// Signed download URLs per pack, with issue time (TTL-based reuse).
     url_cache: Mutex<HashMap<PackHash, (String, Instant)>>,
@@ -315,7 +315,7 @@ struct ChunkFetcher {
 }
 
 impl ChunkFetcher {
-    fn new(twirp: TwirpClient, http: reqwest::Client) -> Self {
+    fn new(twirp: CacheClient, http: reqwest::Client) -> Self {
         Self {
             twirp,
             http,
@@ -674,7 +674,7 @@ impl Substituter {
         store_dir: StoreDir,
         manifest: ManifestStore,
         access_log: AccessLog,
-        twirp: TwirpClient,
+        twirp: CacheClient,
         http: reqwest::Client,
     ) -> Self {
         Self {
@@ -1262,7 +1262,7 @@ mod tests {
                 StoreDir::default(),
                 store,
                 AccessLog::new(),
-                TwirpClient::new(reqwest::Client::new(), "http://unused", "token"),
+                CacheClient::v2_for_tests(reqwest::Client::new()),
                 reqwest::Client::new(),
             )
             .with_manifest_ready(ready_rx),
@@ -1360,7 +1360,7 @@ mod tests {
     #[test]
     fn unused_path_locks_are_pruned() {
         let fetcher = ChunkFetcher::new(
-            TwirpClient::new(reqwest::Client::new(), "http://unused", "token"),
+            CacheClient::v2_for_tests(reqwest::Client::new()),
             reqwest::Client::new(),
         );
         let held = fetcher.path_lock(test_path_hash(1));
