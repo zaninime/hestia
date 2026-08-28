@@ -97,6 +97,9 @@ pub async fn store_entry(twirp: &CacheClient, http: &reqwest::Client, key: &str,
         CacheClient::V2(inner) => {
             inner.finalize_upload(key, data.len() as u64).await.unwrap();
         }
+        // `store_entry` is v2-only: it finalizes via the Twirp RPC, which
+        // the v1 client has no equivalent of.
+        CacheClient::V1(_) => unreachable!("store_entry is v2-only"),
     }
 }
 

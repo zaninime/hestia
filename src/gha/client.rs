@@ -8,6 +8,7 @@ use bytes::Bytes;
 
 use crate::gha::Error;
 use crate::gha::twirp::TwirpClient;
+use crate::gha::v1::V1Client;
 
 /// Environment variable that opts into the cache v1 (`_apis/artifactcache`)
 /// API. Presence alone matters; the value is ignored.
@@ -42,18 +43,24 @@ pub enum DownloadUrl {
     Miss,
 }
 
-/// One pluggable cache backend. The v2 Twirp client is the only arm today;
-/// the v1 client joins it behind [`ENV_CACHE_API_V1`] in a later change.
+/// One pluggable cache backend: the v2 Twirp client (default) or the v1
+/// `_apis/artifactcache` client selected by [`ENV_CACHE_API_V1`].
 #[derive(Debug, Clone)]
 pub enum CacheClient {
     V2(TwirpClient),
+    V1(V1Client),
 }
 
 impl CacheClient {
-    /// Build a client from the process environment. Always selects the v2
-    /// backend for now (the v1 dispatch lands in a later change).
+    /// Build a client from the process environment. The presence of
+    /// [`ENV_CACHE_API_V1`] selects the v1 backend; otherwise the v2
+    /// Twirp client is built. The value of the variable is irrelevant.
     pub fn from_env(http: reqwest::Client) -> Result<CacheClient, Error> {
-        TwirpClient::from_env(http).map(CacheClient::V2)
+        if std::env::var_os(ENV_CACHE_API_V1).is_some() {
+            V1Client::from_env(http).map(CacheClient::V1)
+        } else {
+            TwirpClient::from_env(http).map(CacheClient::V2)
+        }
     }
 
     /// Test-only constructor: a v2 client whose URL is never dereferenced.
@@ -68,6 +75,7 @@ impl CacheClient {
     pub fn version(&self) -> &str {
         match self {
             CacheClient::V2(inner) => inner.version(),
+            CacheClient::V1(inner) => inner.version(),
         }
     }
 
@@ -75,6 +83,7 @@ impl CacheClient {
     pub async fn create_cache_entry(&self, key: &str) -> Result<Reservation, Error> {
         match self {
             CacheClient::V2(inner) => inner.create_cache_entry(key).await,
+            CacheClient::V1(inner) => inner.create_cache_entry(key).await,
         }
     }
 
@@ -86,6 +95,7 @@ impl CacheClient {
     ) -> Result<DownloadUrl, Error> {
         match self {
             CacheClient::V2(inner) => inner.get_download_url(key, restore_keys).await,
+            CacheClient::V1(inner) => inner.get_download_url(key, restore_keys).await,
         }
     }
 
@@ -98,7 +108,10 @@ impl CacheClient {
         data: Bytes,
     ) -> Result<(), Error> {
         match self {
+            // V2: `token` is the pre-signed Azure SAS URL.
             CacheClient::V2(inner) => inner.upload_and_finalize(http, key, token, data).await,
+            // V1: `token` is the reserved cache id; `key` is unused.
+            CacheClient::V1(inner) => inner.upload_and_finalize(http, key, token, data).await,
         }
     }
 
@@ -106,6 +119,7 @@ impl CacheClient {
     pub async fn probe_writable(&self) -> Result<bool, Error> {
         match self {
             CacheClient::V2(inner) => inner.probe_writable().await,
+            CacheClient::V1(inner) => inner.probe_writable().await,
         }
     }
 }
@@ -118,5 +132,31 @@ mod tests {
     fn v1_cache_version_is_sha256_of_hestia_1() {
         let hex = crate::manifest::Hash32::digest(b"hestia-1").to_hex();
         assert_eq!(V1_CACHE_VERSION, hex);
+    }
+
+    #[test]
+    fn from_env_dispatches_on_hestia_cache_api_v1_presence() {
+        // Env vars are process-global; serialize mutation across tests so
+        // parallel test threads never race on set_var/remove_var.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Selector absent -> v2 (TwirpClient, ACTIONS_RESULTS_URL).
+        unsafe {
+            std::env::remove_var(ENV_CACHE_API_V1);
+            std::env::remove_var("ACTIONS_CACHE_URL");
+            std::env::set_var("ACTIONS_RESULTS_URL", "https://results.example");
+            std::env::set_var("ACTIONS_RUNTIME_TOKEN", "token");
+        }
+        let client = CacheClient::from_env(reqwest::Client::new()).unwrap();
+        assert!(matches!(client, CacheClient::V2(_)));
+
+        // Selector present (even empty) -> v1 (V1Client, ACTIONS_CACHE_URL).
+        unsafe {
+            std::env::set_var(ENV_CACHE_API_V1, "");
+            std::env::set_var("ACTIONS_CACHE_URL", "https://cache.example");
+        }
+        let client = CacheClient::from_env(reqwest::Client::new()).unwrap();
+        assert!(matches!(client, CacheClient::V1(_)));
     }
 }
