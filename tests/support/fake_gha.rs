@@ -31,16 +31,17 @@
 //!   (the 10 GB repository cache quota is full).
 
 use std::collections::HashSet;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -49,6 +50,7 @@ use hestia::gha::twirp::{
     CreateCacheEntryRequest, FinalizeCacheEntryUploadRequest, GetCacheEntryDownloadUrlRequest,
     TwirpClient,
 };
+use hestia::gha::v1::V1Client;
 
 const TWIRP_PATH: &str = "/twirp/github.actions.results.api.v1.CacheService";
 
@@ -90,6 +92,15 @@ struct Inner {
     /// When set, every CreateCacheEntry is refused with a write-denied
     /// response (models a read-only runtime token: check_run, fork PR).
     deny_writes: bool,
+    /// When set, v1 lookups that miss answer `200` with an empty body
+    /// instead of the default `204` (some services report misses this way).
+    v1_miss_as_empty_200: bool,
+    /// Number of upcoming v1 PATCHes that fail with HTTP 500 before any
+    /// bytes are written (mid-upload failure injection).
+    v1_patch_failures_remaining: u64,
+    /// When set, v1 reserve (`POST /caches`) is refused with HTTP 403,
+    /// modelling a read-only runtime token.
+    deny_v1_writes: bool,
     /// Number of upcoming blob GETs whose connection gets dropped mid-body.
     blob_read_failures: u64,
     /// While > 0, download lookups pretend the newest matching entry does
@@ -523,6 +534,189 @@ async fn rest_delete(State(state): State<AppState>, Query(query): Query<ListQuer
 }
 
 // ---------------------------------------------------------------------------
+// v1 `_apis/artifactcache` handlers (Gitea / Forgejo cache API)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct V1LookupQuery {
+    #[serde(default)]
+    keys: String,
+    #[serde(default)]
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct V1ReserveRequest {
+    #[serde(default)]
+    key: String,
+    #[serde(default)]
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct V1CommitRequest {
+    #[serde(default)]
+    size: u64,
+}
+
+async fn v1_lookup(State(state): State<AppState>, Query(query): Query<V1LookupQuery>) -> Response {
+    let mut inner = state.inner.lock().unwrap();
+    // `keys` is comma-joined, exact key first, restore keys after. Like the
+    // Twirp lookup, the first requested key that matches anything wins, and
+    // within it the newest finalized entry (by created_at).
+    let matched = query
+        .keys
+        .split(',')
+        .filter(|key| !key.is_empty())
+        .find_map(|key| {
+            let mut matching: Vec<&Entry> = inner
+                .entries
+                .iter()
+                .filter(|e| e.finalized && e.version == query.version && e.key.starts_with(key))
+                .collect();
+            matching.sort_by_key(|e| std::cmp::Reverse(e.created_at));
+            matching.first().copied().cloned()
+        });
+    match matched {
+        None => {
+            if inner.v1_miss_as_empty_200 {
+                // Some services answer "nothing here" as 200 with an empty body.
+                (StatusCode::OK, "").into_response()
+            } else {
+                StatusCode::NO_CONTENT.into_response()
+            }
+        }
+        Some(entry) => {
+            let sig = inner.new_sig();
+            let url = format!("{}/blob/{}?sig={sig}", state.base_url, entry.id);
+            Json(json!({ "cacheKey": entry.key, "archiveLocation": url })).into_response()
+        }
+    }
+}
+
+async fn v1_reserve(State(state): State<AppState>, body: Bytes) -> Response {
+    let Ok(request) = serde_json::from_slice::<V1ReserveRequest>(&body) else {
+        return (StatusCode::BAD_REQUEST, "bad json").into_response();
+    };
+    let mut inner = state.inner.lock().unwrap();
+    if inner.deny_v1_writes {
+        // Read-only runtime token: the write probe relies on the 403 to
+        // tell a write-denied token from a full cache.
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "message": "cache write denied: token has no writable scopes"
+            })),
+        )
+            .into_response();
+    }
+    // Reservation-blocks-forever: an unfinalized reservation still answers
+    // 409, exactly like the Twirp `already_exists` invariant.
+    if inner.find(&request.key, &request.version).is_some() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "typeKey": "ArtifactCacheItemAlreadyExistsException",
+                "message": format!(
+                    "cache entry with key {} and version {} already exists",
+                    request.key, request.version
+                ),
+            })),
+        )
+            .into_response();
+    }
+    inner.next_id += 1;
+    let id = inner.next_id;
+    let created_at = inner.tick();
+    inner.entries.push(Entry {
+        id,
+        key: request.key,
+        version: request.version,
+        finalized: false,
+        size: 0,
+        created_at,
+        last_accessed_at: created_at,
+    });
+    Json(json!({ "cacheID": id })).into_response()
+}
+
+async fn v1_patch(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    headers: HeaderMap,
+    // Consumed so hyper does not reset a reused connection over the unread
+    // (possibly 32 MiB) chunk body.
+    body: Bytes,
+) -> Response {
+    let authorized = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("Bearer "));
+    if !authorized {
+        return (StatusCode::UNAUTHORIZED, "missing bearer token").into_response();
+    }
+    let mut inner = state.inner.lock().unwrap();
+    if !inner.entries.iter().any(|e| e.id == id) {
+        return (StatusCode::NOT_FOUND, "no such cache entry").into_response();
+    }
+    // Mid-upload failure injection: the client sees a 5xx and retries.
+    if inner.v1_patch_failures_remaining > 0 {
+        inner.v1_patch_failures_remaining -= 1;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "injected patch failure").into_response();
+    }
+    let Some(start) = headers
+        .get(header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("bytes "))
+        .and_then(|spec| spec.split_once('-'))
+        .and_then(|(start, _)| start.parse::<u64>().ok())
+    else {
+        return (StatusCode::BAD_REQUEST, "missing Content-Range").into_response();
+    };
+    let path = inner.blob_path(id);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        // Chunks are written at their Content-Range offsets; earlier
+        // chunks must survive (no truncate).
+        .truncate(false)
+        .open(&path)
+        .unwrap();
+    file.seek(SeekFrom::Start(start)).unwrap();
+    file.write_all(&body).unwrap();
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn v1_commit(State(state): State<AppState>, Path(id): Path<u64>, body: Bytes) -> Response {
+    let Ok(request) = serde_json::from_slice::<V1CommitRequest>(&body) else {
+        return (StatusCode::BAD_REQUEST, "bad json").into_response();
+    };
+    let mut inner = state.inner.lock().unwrap();
+    let Some(position) = inner
+        .entries
+        .iter()
+        .position(|e| e.id == id && !e.finalized)
+    else {
+        return (StatusCode::NOT_FOUND, "no pending entry").into_response();
+    };
+    let actual_size = std::fs::metadata(inner.blob_path(id)).map(|m| m.len()).ok();
+    if actual_size != Some(request.size) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "uploaded size {actual_size:?} does not match declared size {}",
+                request.size
+            ),
+        )
+            .into_response();
+    }
+    let entry = &mut inner.entries[position];
+    entry.finalized = true;
+    entry.size = request.size;
+    StatusCode::NO_CONTENT.into_response()
+}
+
+// ---------------------------------------------------------------------------
 // Test-only injection endpoints
 // ---------------------------------------------------------------------------
 
@@ -589,6 +783,16 @@ async fn test_dead_sigs(State(state): State<AppState>, Path(sigs): Path<u64>) ->
     Json(json!({ "dead_sigs_remaining": sigs })).into_response()
 }
 
+async fn test_v1_miss_as_empty(State(state): State<AppState>, Path(on): Path<u8>) -> Response {
+    state.inner.lock().unwrap().v1_miss_as_empty_200 = on != 0;
+    Json(json!({ "v1_miss_as_empty_200": on != 0 })).into_response()
+}
+
+async fn test_fail_v1_patches(State(state): State<AppState>, Path(patches): Path<u64>) -> Response {
+    state.inner.lock().unwrap().v1_patch_failures_remaining = patches;
+    Json(json!({ "v1_patch_failures_remaining": patches })).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Server wiring
 // ---------------------------------------------------------------------------
@@ -624,6 +828,9 @@ impl FakeGha {
             twirp_calls_until_401: None,
             creates_until_quota: None,
             deny_writes: false,
+            v1_miss_as_empty_200: false,
+            v1_patch_failures_remaining: 0,
+            deny_v1_writes: false,
             blob_read_failures: 0,
             stale_lookups_remaining: 0,
             stale_lookups_after: 0,
@@ -637,6 +844,14 @@ impl FakeGha {
         let router = Router::new()
             .route(&format!("{TWIRP_PATH}/{{method}}"), post(twirp_dispatch))
             .route("/blob/{id}", put(blob_put).get(blob_get))
+            .route("/_apis/artifactcache/cache", get(v1_lookup))
+            .route("/_apis/artifactcache/caches", post(v1_reserve))
+            .route(
+                "/_apis/artifactcache/caches/{id}",
+                patch(v1_patch)
+                    .layer(DefaultBodyLimit::disable())
+                    .post(v1_commit),
+            )
             .route(
                 "/repos/{owner}/{repo}/actions/caches",
                 get(rest_list).delete(rest_delete),
@@ -662,6 +877,11 @@ impl FakeGha {
                 post(test_stale_lookups_after),
             )
             .route("/test/dead-sigs/{sigs}", post(test_dead_sigs))
+            .route("/test/v1-miss-as-empty/{on}", post(test_v1_miss_as_empty))
+            .route(
+                "/test/fail-v1-patches/{patches}",
+                post(test_fail_v1_patches),
+            )
             .with_state(state);
 
         let task = tokio::spawn(async move {
@@ -694,10 +914,20 @@ impl FakeGha {
     pub fn deny_writes(&self) {
         self.inner.lock().unwrap().deny_writes = true;
     }
+    /// Refuse every v1 reservation (`POST /caches`) with HTTP 403,
+    /// modelling a read-only runtime token.
+    pub fn deny_v1_writes(&self) {
+        self.inner.lock().unwrap().deny_v1_writes = true;
+    }
 
     /// Twirp client pointed at this fake.
     pub fn twirp(&self, http: &reqwest::Client) -> TwirpClient {
         TwirpClient::new(http.clone(), &self.base_url, "fake-runtime-token")
+    }
+
+    /// v1 cache client pointed at this fake (`_apis/artifactcache`).
+    pub fn v1(&self, http: &reqwest::Client) -> V1Client {
+        V1Client::new(http.clone(), self.base_url.as_str(), "fake-runtime-token")
     }
 
     /// REST client pointed at this fake. The fake never rate-limits, so
@@ -804,6 +1034,29 @@ impl FakeGha {
     pub async fn dead_sigs(&self, http: &reqwest::Client, sigs: u64) {
         let url = format!("{}/test/dead-sigs/{sigs}", self.base_url);
         let response = http.post(&url).send().await.expect("dead-sigs request");
+        assert!(response.status().is_success());
+    }
+
+    /// Answer missed v1 lookups with an empty `200` body instead of `204`.
+    pub async fn set_v1_miss_as_empty(&self, http: &reqwest::Client, on: bool) {
+        let url = format!("{}/test/v1-miss-as-empty/{}", self.base_url, u8::from(on));
+        let response = http
+            .post(&url)
+            .send()
+            .await
+            .expect("v1-miss-as-empty request");
+        assert!(response.status().is_success());
+    }
+
+    /// Fail the next `patches` v1 PATCHes with HTTP 500 before writing any
+    /// bytes (mid-upload failure injection). `0` clears the injection.
+    pub async fn fail_v1_patches(&self, http: &reqwest::Client, patches: u64) {
+        let url = format!("{}/test/fail-v1-patches/{patches}", self.base_url);
+        let response = http
+            .post(&url)
+            .send()
+            .await
+            .expect("fail-v1-patches request");
         assert!(response.status().is_success());
     }
 }
