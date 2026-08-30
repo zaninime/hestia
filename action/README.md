@@ -95,7 +95,9 @@ daemon uses it when `HESTIA_CACHE_API_V1` is set.
 |---|---|---|
 | `binary` | — | Path to a pre-built hestia binary. Takes precedence over `version`. |
 | `version` | latest release | Release tag to download (e.g. `v1.0.0`). The download is verified against GitHub's build attestations. |
-| `github-token` | `${{ github.token }}` | Token for the attestation API lookup. |
+| `github-token` | `${{ github.token }}` | Token for downloading the release (needed for private-repo releases) and the attestation lookup. |
+| `github-api-url` | runner env | Base URL of the GitHub REST API for release/attestation lookups (e.g. `https://ghes.example.com/api/v3`). |
+| `github-server-url` | runner env | Base URL the hestia release binary is downloaded from. Override to pull from a different host than the runner's. |
 | `listen` | free port per invocation | Substituter listen address. |
 | `socket` | per-invocation temp path | Post-build-hook unix socket path. |
 | `drain-timeout` | `300` | Seconds the post-job step waits for the final upload. |

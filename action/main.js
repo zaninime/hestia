@@ -70,8 +70,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // On GitHub Enterprise Server, GITHUB_ACTION_REPOSITORY names a repo on the
 // instance; hardcoding public hosts would leak the instance token to
 // api.github.com and let a same-named public repo supply the binary.
-const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
-const serverBase = process.env.GITHUB_SERVER_URL || 'https://github.com';
+// The `github-api-url` / `github-server-url` inputs override the runner's
+// own endpoints, e.g. to download the hestia release from a host other
+// than the one the job runs on.
+const apiBase =
+  getInput('github-api-url') || process.env.GITHUB_API_URL || 'https://api.github.com';
+const serverBase =
+  getInput('github-server-url') || process.env.GITHUB_SERVER_URL || 'https://github.com';
 
 /**
  * Compare release tags like v0.1.0-alpha.10: dot/dash segments compared
@@ -244,7 +249,14 @@ async function installBinary(installDir) {
     const assetName = `hestia-${arch}-${process.platform}`;
     const url = `${serverBase}/${repo}/releases/download/${version}/${assetName}`;
     console.log(`hestia-cache: downloading ${url}`);
-    const response = await fetch(url, { redirect: 'follow' });
+    // Bearer auth so private-repo release assets resolve (unauthenticated
+    // requests to them get a 404). Public releases ignore the header.
+    const headers = {};
+    const downloadToken = getInput('github-token');
+    if (downloadToken) {
+      headers.Authorization = `Bearer ${downloadToken}`;
+    }
+    const response = await fetch(url, { headers, redirect: 'follow' });
     if (!response.ok) {
       fail(`download failed: HTTP ${response.status} for ${url}`);
     }

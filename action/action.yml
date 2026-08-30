@@ -26,10 +26,25 @@ inputs:
     default: "latest"
   github-token:
     description: >
-      Token for the attestation API lookup that verifies downloaded release
-      binaries.
+      Token for downloading the hestia release (needed for private-repo
+      releases) and the attestation API lookup that verifies it.
     required: false
     default: ${{ github.token }}
+  github-api-url:
+    description: >
+      Base URL of the GitHub REST API used to resolve releases and verify
+      attestations. Defaults to the runner-provided GITHUB_API_URL;
+      override to pull from a different host (e.g. GHES:
+      https://ghes.example.com/api/v3).
+    required: false
+    default: ""
+  github-server-url:
+    description: >
+      Base URL the hestia release binary is downloaded from
+      (<server>/<repo>/releases/download/...). Defaults to the
+      runner-provided GITHUB_SERVER_URL.
+    required: false
+    default: ""
   listen:
     description: >
       Address the substituter HTTP server listens on. Defaults to 127.0.0.1

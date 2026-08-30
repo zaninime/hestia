@@ -212,7 +212,9 @@ All inputs are optional; the defaults work for the quick start above.
 |---|---|---|
 | `binary` | — | Path to a pre-built hestia binary. Takes precedence over `version`. |
 | `version` | latest release | Release tag to download (e.g. `v1.0.0`). The download is verified against GitHub's build attestations. |
-| `github-token` | `${{ github.token }}` | Token for the attestation API lookup. |
+| `github-token` | `${{ github.token }}` | Token for downloading the release (needed for private-repo releases), the attestation lookup, and the daemon's eviction check. |
+| `github-api-url` | runner env | Base URL of the GitHub REST API for release/attestation lookups (e.g. `https://ghes.example.com/api/v3`). |
+| `github-server-url` | runner env | Base URL the hestia release binary is downloaded from. Override to pull from a different host than the runner's. |
 | `listen` | `127.0.0.1:37515` | Substituter listen address. |
 | `socket` | `/tmp/hestia/hook.sock` | Post-build-hook unix socket path. |
 | `drain-timeout` | `300` | Seconds the post-job step waits for the final upload. |
