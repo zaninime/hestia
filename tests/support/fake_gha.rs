@@ -637,7 +637,7 @@ async fn v1_reserve(State(state): State<AppState>, body: Bytes) -> Response {
         created_at,
         last_accessed_at: created_at,
     });
-    Json(json!({ "cacheID": id })).into_response()
+    Json(json!({ "cacheId": id })).into_response()
 }
 
 async fn v1_patch(

@@ -66,8 +66,8 @@ struct ReserveCacheRequest {
 /// `POST /caches` 200 body: the id later used in `caches/{id}`.
 #[derive(Debug, Deserialize)]
 struct ReserveCacheResponse {
-    #[serde(rename = "cacheID")]
-    cache_id: i64,
+    #[serde(rename = "cacheId")]
+    cache_id: u64,
 }
 
 /// `POST /caches/{id}` body.
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn response_shapes_deserialize_from_service_json() {
-        let reserve: ReserveCacheResponse = serde_json::from_str(r#"{"cacheID": 7}"#).unwrap();
+        let reserve: ReserveCacheResponse = serde_json::from_str(r#"{"cacheId": 7}"#).unwrap();
         assert_eq!(reserve.cache_id, 7);
 
         let entry: CacheEntryResponse = serde_json::from_str(
@@ -625,11 +625,19 @@ mod tests {
         assert!(empty.archive_location.is_empty());
     }
 
+    #[test]
+    fn reserve_response_parses_the_real_gitea_wire_shape() {
+        // Gitea/Forgejo produce `{"cacheId": <rand.Uint64()>}`: unsigned 64-bit id.
+        let response: ReserveCacheResponse =
+            serde_json::from_str(&format!(r#"{{"cacheId": {}}}"#, u64::MAX)).unwrap();
+        assert_eq!(response.cache_id, u64::MAX);
+    }
+
     // (c) Reserve status mapping ------------------------------------------------------
 
     #[tokio::test]
     async fn reserve_maps_200_cache_id_to_created_token() {
-        let stub = spawn_stub(reserve_ok(r#"{"cacheID": 7}"#)).await;
+        let stub = spawn_stub(reserve_ok(r#"{"cacheId": 7}"#)).await;
         let reservation = stub.client().create_cache_entry("pack-abc").await.unwrap();
         assert_eq!(
             reservation,
@@ -673,7 +681,7 @@ mod tests {
     #[tokio::test]
     async fn lookup_maps_204_and_empty_bodies_to_miss() {
         // 204 -> Miss
-        let stub = spawn_stub(reserve_ok(r#"{"cacheID": 1}"#)).await;
+        let stub = spawn_stub(reserve_ok(r#"{"cacheId": 1}"#)).await;
         assert_eq!(
             stub.client()
                 .get_download_url("m#1", &["m#"])
@@ -684,7 +692,7 @@ mod tests {
         // 200 with an empty body -> Miss
         let stub = spawn_stub(stub_config(
             StatusCode::OK,
-            r#"{"cacheID": 1}"#,
+            r#"{"cacheId": 1}"#,
             StatusCode::OK,
             "",
         ))
@@ -699,7 +707,7 @@ mod tests {
         // 200 without a cacheKey -> Miss
         let stub = spawn_stub(stub_config(
             StatusCode::OK,
-            r#"{"cacheID": 1}"#,
+            r#"{"cacheId": 1}"#,
             StatusCode::OK,
             r#"{"archiveLocation": "https://blob/x"}"#,
         ))
@@ -717,7 +725,7 @@ mod tests {
     async fn lookup_maps_200_missing_archive_location_to_invalid_response() {
         let stub = spawn_stub(stub_config(
             StatusCode::OK,
-            r#"{"cacheID": 1}"#,
+            r#"{"cacheId": 1}"#,
             StatusCode::OK,
             r#"{"cacheKey": "m#1"}"#,
         ))
@@ -734,7 +742,7 @@ mod tests {
     async fn lookup_maps_200_full_body_to_hit_and_builds_the_query_uri() {
         let stub = spawn_stub(stub_config(
             StatusCode::OK,
-            r#"{"cacheID": 1}"#,
+            r#"{"cacheId": 1}"#,
             StatusCode::OK,
             r#"{"cacheKey": "m#7", "archiveLocation": "https://blob/x"}"#,
         ))
@@ -766,7 +774,7 @@ mod tests {
 
     #[tokio::test]
     async fn upload_patches_one_chunk_then_commits_the_size() {
-        let stub = spawn_stub(reserve_ok(r#"{"cacheID": 7}"#)).await;
+        let stub = spawn_stub(reserve_ok(r#"{"cacheId": 7}"#)).await;
         let data = Bytes::from(vec![0xCDu8; 5]);
         stub.client()
             .upload_and_finalize(&reqwest::Client::new(), "pack-abc", "7".to_string(), data)
@@ -791,7 +799,7 @@ mod tests {
 
     #[tokio::test]
     async fn upload_splits_data_into_32_mib_patches_with_auth_and_ranges() {
-        let stub = spawn_stub(reserve_ok(r#"{"cacheID": 7}"#)).await;
+        let stub = spawn_stub(reserve_ok(r#"{"cacheId": 7}"#)).await;
         let total = UPLOAD_CHUNK_SIZE + 3;
         let data = Bytes::from(vec![0xABu8; total]);
         stub.client()
@@ -844,7 +852,7 @@ mod tests {
 
     #[tokio::test]
     async fn probe_writable_reserves_the_fixed_probe_key() {
-        let stub = spawn_stub(reserve_ok(r#"{"cacheID": 1}"#)).await;
+        let stub = spawn_stub(reserve_ok(r#"{"cacheId": 1}"#)).await;
         assert!(stub.client().probe_writable().await.unwrap());
         let reserve = stub
             .requests()
@@ -862,7 +870,7 @@ mod tests {
         for status in [StatusCode::OK, StatusCode::CONFLICT] {
             let stub = spawn_stub(stub_config(
                 status,
-                r#"{"cacheID": 1}"#,
+                r#"{"cacheId": 1}"#,
                 StatusCode::NO_CONTENT,
                 "",
             ))
